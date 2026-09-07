@@ -6,11 +6,18 @@ import {
 } from '../../protocol/requests.js';
 import { isRecord, isUuid, utf8Length } from '../../protocol/validation.js';
 import { readViewport, type Viewport } from './viewport.js';
+import type { Traversal, WalkPart } from './walk.js';
 
 const PAGE_PATH = '/__mean/dom/v1';
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const CONTROL_LIMIT = 4096;
 const ADAPTER_BUDGET_MS = 16;
+// Spec, Walk algorithm and budget: 20 ms before the first part, 12 ms per later slice, 2 s in all.
+// Sorting and serialising a part happen after the traversal stops, so each slice keeps a reserve.
+const FIRST_SLICE_MS = 20;
+const NEXT_SLICE_MS = 12;
+const PART_RESERVE_MS = 2;
+const WALK_WALL_MS = 2000;
 
 // Read at probe time and compared again around the walk; never sent to Mean.
 interface Snapshot {
@@ -21,6 +28,13 @@ interface Snapshot {
   scrollX: number;
   scrollY: number;
   viewport: Viewport;
+}
+
+// A walk between slices: the only time the runtime owns a timer.
+interface PendingWalk {
+  traversal: Traversal;
+  timer: ReturnType<typeof setTimeout>;
+  send(value: unknown): void;
 }
 
 type LazyModules = Promise<[typeof import('./walk.js'), typeof import('../../adapters/detect.js')]>;
@@ -37,6 +51,7 @@ export function startRuntime(
   let generation = 0;
   let snapshot: Snapshot | undefined;
   let modules: LazyModules | undefined;
+  let pending: PendingWalk | undefined;
 
   const snapshotPage = (id: string): Snapshot | undefined => {
     const viewport = readViewport();
@@ -65,6 +80,15 @@ export function startRuntime(
     );
   };
   const stale = () => new MeanProtocolError('stale');
+
+  // The unfinished walk closes with what it holds; nothing of it may run later.
+  const cancelPending = (): void => {
+    const current = pending;
+    if (!current) return;
+    pending = undefined;
+    clearTimeout(current.timer);
+    current.send(current.traversal.cancel());
+  };
 
   function reconnect(): void {
     if (
@@ -96,6 +120,7 @@ export function startRuntime(
     const epoch = ++generation;
     current.addEventListener('close', () => {
       if (socket === current) {
+        cancelPending();
         snapshot = undefined;
         busy = false;
         generation++;
@@ -157,11 +182,14 @@ export function startRuntime(
     }
     let handle: () => Promise<unknown>;
     if (message.type === 'probe') handle = () => probe(requestId, epoch);
-    else if (message.type === 'walk' && isWalkRequest(message)) handle = () => walk(message, epoch);
+    else if (message.type === 'walk' && isWalkRequest(message))
+      handle = () => walk(message, epoch, send);
     else {
       fail(message.type === 'walk' ? 'invalid_request' : 'unsupported_type');
       return;
     }
+    // A new probe or walk supersedes a walk still between slices.
+    cancelPending();
     busy = true;
     try {
       const reply = await handle();
@@ -203,7 +231,11 @@ export function startRuntime(
   }
 
   // A walk consumes the probe's snapshot; any change between probe and walk is stale.
-  function walk(request: WalkRequest, epoch: number): Promise<unknown> {
+  function walk(
+    request: WalkRequest,
+    epoch: number,
+    send: (value: unknown) => void,
+  ): Promise<unknown> {
     const saved = snapshot;
     snapshot = undefined;
     if (!saved || saved.id !== request.probeId || !unchanged(saved)) throw stale();
@@ -216,23 +248,65 @@ export function startRuntime(
     )
       throw stale();
     if (!modules) throw stale();
+    const started = performance.now();
     return modules.then(([walker, adapters]) => {
       if (epoch !== generation || disposed) return;
       if (!unchanged(saved)) throw stale();
+      // Detection keeps its own short budget so a slow page still leaves the first slice room to walk.
+      const detection = { projectRoot, deadline: started + ADAPTER_BUDGET_MS, truncated: false };
+      const detected = adapters.detectAdapters(detection);
       const context = {
         projectRoot,
-        deadline: performance.now() + ADAPTER_BUDGET_MS,
-        truncated: false,
+        deadline: started + WALK_WALL_MS,
+        truncated: detection.truncated,
       };
-      const detected = adapters.detectAdapters(context);
-      const result = walker.walk(request.requestId, view, detected, context);
-      if (!unchanged(saved)) throw stale();
-      return result;
+      const traversal = walker.startWalk(request.requestId, view, detected, context);
+      return advance(traversal, saved, epoch, send, started + FIRST_SLICE_MS - PART_RESERVE_MS);
     });
+  }
+
+  // Runs one slice and hands back its part; a zero-delay timer continues the traversal.
+  function advance(
+    traversal: Traversal,
+    saved: Snapshot,
+    epoch: number,
+    send: (value: unknown) => void,
+    deadline: number,
+  ): WalkPart {
+    const part = traversal.slice(deadline);
+    if (!unchanged(saved)) throw stale();
+    if (part.more) {
+      const timer = setTimeout(() => {
+        pending = undefined;
+        if (disposed || epoch !== generation) return;
+        try {
+          if (!unchanged(saved)) throw stale();
+          send(
+            advance(
+              traversal,
+              saved,
+              epoch,
+              send,
+              performance.now() + NEXT_SLICE_MS - PART_RESERVE_MS,
+            ),
+          );
+        } catch (cause) {
+          send({
+            v: 1,
+            type: 'error',
+            requestId: traversal.requestId,
+            code: cause instanceof MeanProtocolError ? cause.code : 'internal',
+          });
+        }
+      }, 0);
+      pending = { traversal, timer, send };
+    }
+    return part;
   }
 
   const pagehide = (): void => {
     hidden = true;
+    cancelPending();
     snapshot = undefined;
     busy = false;
     generation++;

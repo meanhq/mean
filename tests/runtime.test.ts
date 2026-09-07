@@ -52,8 +52,16 @@ beforeEach(() => {
     value: { scale: 1, offsetLeft: 0, offsetTop: 0, width: innerWidth, height: innerHeight },
   });
   document.body.innerHTML = '';
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+    () => new DOMRect(0, 0, 100, 100),
+  );
+  Object.defineProperty(Range.prototype, 'getClientRects', {
+    configurable: true,
+    value: () => [new DOMRect(0, 0, 100, 100)],
+  });
 });
 afterEach(() => {
+  Reflect.deleteProperty(Range.prototype, 'getClientRects');
   runtime?.dispose();
   runtime = undefined;
   vi.restoreAllMocks();
@@ -63,6 +71,24 @@ const probe = async (socket: Socket) => {
   socket.message({ v: 1, type: 'probe', requestId: id });
   await vi.waitFor(() => expect(socket.sent.at(-1)?.type).toBe('probe.result'));
 };
+// Lets a test run the runtime's zero-delay timers by hand; the runtime must own at most one.
+function captureTimers() {
+  const queue: (() => void)[] = [];
+  const timers = { queue, scheduled: 0, cleared: 0, fire: () => queue.shift()?.() };
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay: number) => {
+    expect(delay).toBe(0);
+    timers.scheduled++;
+    queue.push(callback);
+    return timers.scheduled;
+  }) as typeof setTimeout);
+  vi.spyOn(globalThis, 'clearTimeout').mockImplementation((() => {
+    timers.cleared++;
+    queue.length = 0;
+  }) as typeof clearTimeout);
+  return timers;
+}
+// Microtasks and one macrotask, outside the captured setTimeout.
+const settle = () => new Promise<void>((done) => setImmediate(done));
 const walk = () => ({
   v: 1,
   type: 'walk',
@@ -149,6 +175,110 @@ describe('Lifecycle and the idle guarantee', () => {
     socket.message(walk());
     await vi.waitFor(() => expect(socket.sent.at(-1)?.code).toBe('stale'));
     expect(JSON.stringify(socket.sent.at(-1))).not.toContain('PRIVATE');
+  });
+  it('streams a large page in parts on zero-delay timers and holds none after the last', async () => {
+    document.body.innerHTML = Array.from(
+      { length: 60 },
+      (_, index) => `<section><p id="p${index}">${index}</p></section>`,
+    ).join('');
+    runtime = startRuntime('token', '/project');
+    const socket = connected();
+    await probe(socket);
+    const timers = captureTimers();
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.1));
+    socket.message(walk());
+    await settle();
+    const parts = () => socket.sent.filter((sent) => sent.requestId === walkId);
+    while (parts().at(-1)?.more === true) {
+      expect(timers.queue).toHaveLength(1);
+      timers.fire();
+      await settle();
+    }
+    expect(parts().length).toBeGreaterThan(2);
+    parts().forEach((sent, index) => {
+      expect(sent.type).toBe('walk.result');
+      expect(sent.part).toBe(index + 1);
+      expect(sent.more).toBe(index < parts().length - 1);
+      if (index < parts().length - 1) expect(sent.truncated).toBe(false);
+    });
+    expect(parts().at(-1)?.truncated).toBe(false);
+    const ids = parts().flatMap((sent) =>
+      (sent.elements as Array<{ id?: string }>).map((element) => element.id),
+    );
+    for (let index = 0; index < 60; index++) expect(ids).toContain(`p${index}`);
+    expect(timers.scheduled).toBe(parts().length - 1);
+    expect(timers.queue).toHaveLength(0);
+    expect(timers.cleared).toBe(0);
+  });
+  it('closes a pending walk with a final part when a probe, walk or pagehide interrupts it', async () => {
+    document.body.innerHTML = '<p>text</p>'.repeat(60);
+    runtime = startRuntime('token', '/project');
+    const socket = connected();
+    await probe(socket);
+    const timers = captureTimers();
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.1));
+    socket.message(walk());
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: walkId, part: 1, more: true });
+    expect(timers.queue).toHaveLength(1);
+    socket.message({ v: 1, type: 'probe', requestId: id });
+    const final = socket.sent.at(-1);
+    expect(final).toMatchObject({
+      type: 'walk.result',
+      requestId: walkId,
+      part: 2,
+      more: false,
+      truncated: true,
+    });
+    expect(timers.cleared).toBe(1);
+    await settle();
+    expect(socket.sent.at(-1)?.type).toBe('probe.result');
+    expect(timers.queue).toHaveLength(0);
+    expect(socket.sent.filter((sent) => sent.requestId === walkId).at(-1)).toBe(final);
+
+    socket.message(walk());
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: walkId, more: true });
+    const secondWalk = '33333333-3333-3333-3333-333333333333';
+    socket.message({ ...walk(), requestId: secondWalk });
+    expect(socket.sent.at(-2)).toMatchObject({ requestId: walkId, more: false, truncated: true });
+    // The interrupted walk consumed the probe, so the newcomer needs a probe of its own.
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: secondWalk, code: 'stale' });
+    expect(timers.queue).toHaveLength(0);
+
+    socket.message({ v: 1, type: 'probe', requestId: id });
+    await settle();
+    expect(socket.sent.at(-1)?.type).toBe('probe.result');
+    socket.message({ ...walk(), requestId: secondWalk });
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: secondWalk, more: true });
+    window.dispatchEvent(new Event('pagehide'));
+    expect(socket.sent.at(-1)).toMatchObject({
+      requestId: secondWalk,
+      more: false,
+      truncated: true,
+    });
+    expect(timers.queue).toHaveLength(0);
+    expect(timers.cleared).toBe(3);
+  });
+  it('drops a pending walk silently when its socket closes', async () => {
+    document.body.innerHTML = '<p>text</p>'.repeat(60);
+    runtime = startRuntime('token', '/project');
+    const socket = connected();
+    await probe(socket);
+    const timers = captureTimers();
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.1));
+    socket.message(walk());
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: walkId, part: 1, more: true });
+    const sent = socket.sent.length;
+    socket.close();
+    expect(timers.cleared).toBe(1);
+    expect(timers.queue).toHaveLength(0);
+    expect(socket.sent.length).toBe(sent);
   });
   it('reports unsupported_viewport when visualViewport is missing', async () => {
     Object.defineProperty(window, 'visualViewport', { value: undefined, configurable: true });

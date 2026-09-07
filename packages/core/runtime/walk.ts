@@ -1,5 +1,6 @@
 import type { Adapter, Context, Identity } from '../../adapters/adapter.js';
 import { readSourceStamp } from '../../adapters/source.js';
+import { MeanProtocolError } from '../../protocol/requests.js';
 import { codePointCount, isBoundedString, utf8Length } from '../../protocol/validation.js';
 import { hasPrivateDescendants, isSkippedSubtree } from './privacy.js';
 import type { Viewport } from './viewport.js';
@@ -21,13 +22,24 @@ export interface Entry extends Identity {
   text?: string;
   elementPath?: string;
 }
-export interface WalkResult {
+export interface WalkPart {
   v: 1;
   type: 'walk.result';
   requestId: string;
   viewport: Viewport;
   elements: Entry[];
   truncated: boolean;
+  part: number;
+  more: boolean;
+}
+
+// One walk, resumed slice by slice from the same traversal stack. Spec: Walk algorithm and budget.
+export interface Traversal {
+  readonly requestId: string;
+  // Continues until the deadline, a part cap or the end of the document; the part is the caller's to send.
+  slice(deadline: number): WalkPart;
+  // Ends an unfinished walk early: whatever is buffered leaves as the final part.
+  cancel(): WalkPart;
 }
 
 interface Bounds {
@@ -46,10 +58,13 @@ interface Visit {
   siblings: Map<string, number>;
 }
 
-const MAX_ELEMENTS = 1000;
-const MAX_VISITED = 10000;
+const MAX_ELEMENTS = 4000;
+const MAX_PART_ELEMENTS = 1000;
+const MAX_VISITED = 40000;
 const MAX_DEPTH = 128;
-const MAX_BYTES = 256 * 1024;
+const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_PART_BYTES = 256 * 1024;
+const MAX_PARTS = 1000;
 const MAX_PATH_DEPTH = 12;
 const MAX_TEXT = 80;
 const MAX_CLASSES = 16;
@@ -63,33 +78,54 @@ const intersection = (a: Bounds, b: Bounds): Bounds => ({
 });
 const positive = (r: Bounds): boolean => r.right > r.left && r.bottom > r.top;
 const clips = (overflow: string): boolean => /^(hidden|clip|scroll|auto)$/.test(overflow);
+const area = (entry: Entry): number => entry.rect.width * entry.rect.height;
+// The shorthand alone misses corners after a zero first value; the longhands alone miss engines
+// that only serialise the shorthand.
+const rounded = (style: CSSStyleDeclaration): boolean =>
+  [
+    style.borderRadius,
+    style.borderTopLeftRadius,
+    style.borderTopRightRadius,
+    style.borderBottomRightRadius,
+    style.borderBottomLeftRadius,
+  ].some((radius) => parseFloat(radius) > 0);
 
-export function walk(
+export function startWalk(
   requestId: string,
   view: Viewport,
   adapters: Adapter[],
   context: Context,
-): WalkResult {
-  const result: WalkResult = {
+): Traversal {
+  const root = document.documentElement;
+  const stack: Visit[] = root
+    ? [
+        {
+          node: root,
+          depth: 0,
+          clip: { left: 0, top: 0, right: view.width, bottom: view.height },
+          siblings: new Map(),
+        },
+      ]
+    : [];
+  let visited = 0;
+  let emitted = 0;
+  let parts = 0;
+  let finished = false;
+  // An entry that did not fit the closing part opens the next one.
+  let carried: { entry: Entry; size: number } | undefined;
+  const part = (elements: Entry[], more: boolean, number: number): WalkPart => ({
     v: 1,
     type: 'walk.result',
     requestId,
     viewport: view,
-    elements: [],
-    truncated: context.truncated,
-  };
-  const root = document.documentElement;
-  if (!root) return result;
-  const stack: Visit[] = [
-    {
-      node: root,
-      depth: 0,
-      clip: { left: 0, top: 0, right: view.width, bottom: view.height },
-      siblings: new Map(),
-    },
-  ];
-  let visited = 0;
-  let bytes = utf8Length(JSON.stringify(result));
+    elements,
+    truncated: more ? false : context.truncated,
+    part: number,
+    more,
+  });
+  // Every part carries the envelope; the widest part number and truncated value are assumed.
+  const envelopeBytes = utf8Length(JSON.stringify(part([], false, MAX_PARTS)));
+  let totalBytes = envelopeBytes;
   const pastDeadline = () => performance.now() >= context.deadline;
 
   // Oversized identity fields are omitted, never shortened into a different identity.
@@ -114,10 +150,6 @@ export function walk(
       range.selectNodeContents(child);
       let visible = false;
       for (const rect of range.getClientRects()) {
-        if (pastDeadline()) {
-          context.truncated = true;
-          return done();
-        }
         if (positive(intersection(rect, clip))) {
           visible = true;
           break;
@@ -149,10 +181,6 @@ export function walk(
 
   const resolveIdentity = (element: Element, entry: Entry): void => {
     for (const adapter of adapters) {
-      if (pastDeadline()) {
-        context.truncated = true;
-        break;
-      }
       try {
         const identity = adapter.resolve(element, context);
         if (identity.component || identity.source) {
@@ -164,62 +192,62 @@ export function walk(
         /* Metadata failures leave the element on the DOM lane. */
       }
     }
-    if (!entry.source && !pastDeadline()) {
+    if (!entry.source) {
       const source = readSourceStamp(element, context);
       if (source) entry.source = source;
     }
   };
 
-  while (stack.length) {
-    if (visited >= MAX_VISITED || result.elements.length >= MAX_ELEMENTS || pastDeadline()) {
-      context.truncated = true;
-      break;
-    }
+  // Visits one stack node; returns the entry it produced, if any.
+  const inspect = (): Entry | undefined => {
     const visit = stack.pop();
-    if (!visit) break;
+    if (!visit) return;
     const node = visit.node;
     // Push one sibling at a time: a huge child list cannot allocate an unbounded stack.
     if (node.nextSibling) stack.push({ ...visit, node: node.nextSibling });
     visited++;
-    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as Element;
     const tag = element.localName.toLowerCase();
     const siblingType = `${element.namespaceURI}:${element.localName}`;
     const ordinal = (visit.siblings.get(siblingType) || 0) + 1;
     visit.siblings.set(siblingType, ordinal);
-    if (isSkippedSubtree(element)) continue;
+    if (isSkippedSubtree(element)) return;
 
     const style = getComputedStyle(element);
-    if (style.display === 'none' || (style.opacity !== '' && Number(style.opacity) === 0)) continue;
+    if (style.display === 'none' || (style.opacity !== '' && Number(style.opacity) === 0)) return;
     // Nonrectangular clips cannot be represented by this protocol.
     if (
       (style.clipPath && style.clipPath !== 'none') ||
       (style.clip && style.clip !== 'auto') ||
       (style.maskImage && style.maskImage !== 'none')
     )
-      continue;
+      return;
 
     const clientRect = element.getBoundingClientRect();
     const box = intersection(clientRect, visit.clip);
     let childClip = visit.clip;
+    // The element's own box is clipped by its ancestors only; its overflow clips descendants.
+    let descend = true;
     const clipX = style.display !== 'inline' && clips(style.overflowX || style.overflow);
     const clipY = style.display !== 'inline' && clips(style.overflowY || style.overflow);
     if (clipX || clipY) {
       // Transformed or rounded overflow containers clip to a shape this protocol cannot express.
-      if ((style.transform && style.transform !== 'none') || parseFloat(style.borderRadius) > 0)
-        continue;
-      const padding = {
-        left: clientRect.left + element.clientLeft,
-        top: clientRect.top + element.clientTop,
-        right: clientRect.left + element.clientLeft + element.clientWidth,
-        bottom: clientRect.top + element.clientTop + element.clientHeight,
-      };
-      childClip = intersection(visit.clip, {
-        left: clipX ? padding.left : -Infinity,
-        right: clipX ? padding.right : Infinity,
-        top: clipY ? padding.top : -Infinity,
-        bottom: clipY ? padding.bottom : Infinity,
-      });
+      if ((style.transform && style.transform !== 'none') || rounded(style)) descend = false;
+      else {
+        const padding = {
+          left: clientRect.left + element.clientLeft,
+          top: clientRect.top + element.clientTop,
+          right: clientRect.left + element.clientLeft + element.clientWidth,
+          bottom: clientRect.top + element.clientTop + element.clientHeight,
+        };
+        childClip = intersection(visit.clip, {
+          left: clipX ? padding.left : -Infinity,
+          right: clipX ? padding.right : Infinity,
+          top: clipY ? padding.top : -Infinity,
+          bottom: clipY ? padding.bottom : Infinity,
+        });
+      }
     }
 
     const isPrivate = hasPrivateDescendants(element);
@@ -256,7 +284,7 @@ export function walk(
       }
     } else if (visit.depth >= MAX_PATH_DEPTH) context.truncated = true;
 
-    if (!isPrivate && element.firstChild && positive(childClip)) {
+    if (descend && !isPrivate && element.firstChild && positive(childClip)) {
       if (visit.depth < MAX_DEPTH)
         stack.push({
           node: element.firstChild,
@@ -268,11 +296,10 @@ export function walk(
       else context.truncated = true;
     }
 
-    if (!positive(box) || style.visibility === 'hidden' || style.visibility === 'collapse')
-      continue;
+    if (!positive(box) || style.visibility === 'hidden' || style.visibility === 'collapse') return;
     if (!isBoundedString(tag, 64)) {
       context.truncated = true;
-      continue;
+      return;
     }
     const entry: Entry = {
       rect: {
@@ -295,25 +322,79 @@ export function walk(
       if (text) entry.text = text;
     }
     resolveIdentity(element, entry);
+    return entry;
+  };
 
-    const size = utf8Length(JSON.stringify(entry)) + 1;
-    if (bytes + size > MAX_BYTES) {
+  const finish = (): void => {
+    finished = true;
+    stack.length = 0;
+    carried = undefined;
+  };
+
+  const close = (elements: Entry[], more: boolean): WalkPart => {
+    if (!more) finish();
+    // Deepest first, then smallest: Mean's hit-test precedence. A stable sort keeps traversal order.
+    elements.sort((a, b) => b.depth - a.depth || area(a) - area(b));
+    return part(elements, more, ++parts);
+  };
+
+  // Ends a part with more to come and books the next part's envelope; the last permitted part closes.
+  const yieldPart = (elements: Entry[]): WalkPart => {
+    if (parts + 1 >= MAX_PARTS) {
       context.truncated = true;
-      break;
+      return close(elements, false);
     }
-    bytes += size;
-    result.elements.push(entry);
-  }
+    totalBytes += envelopeBytes;
+    return close(elements, true);
+  };
 
-  result.truncated = context.truncated;
-  // Trim the traversal prefix before sorting, never the hit-test order.
-  while (utf8Length(JSON.stringify(result)) > MAX_BYTES) {
-    result.elements.pop();
-    result.truncated = true;
-  }
-  // Deepest first, then smallest: Mean's hit-test precedence.
-  result.elements.sort(
-    (a, b) => b.depth - a.depth || a.rect.width * a.rect.height - b.rect.width * b.rect.height,
-  );
-  return result;
+  const assertOpen = (): void => {
+    if (finished) throw new MeanProtocolError('internal');
+  };
+
+  return {
+    requestId,
+    slice(deadline) {
+      assertOpen();
+      const elements: Entry[] = [];
+      let partBytes = envelopeBytes;
+      if (carried) {
+        elements.push(carried.entry);
+        partBytes += carried.size;
+        carried = undefined;
+      }
+      while (stack.length) {
+        if (performance.now() >= deadline) return yieldPart(elements);
+        if (visited >= MAX_VISITED || emitted >= MAX_ELEMENTS || pastDeadline()) {
+          context.truncated = true;
+          break;
+        }
+        const entry = inspect();
+        if (!entry) continue;
+        const size = utf8Length(JSON.stringify(entry)) + 1;
+        const splits = elements.length >= MAX_PART_ELEMENTS || partBytes + size > MAX_PART_BYTES;
+        if (totalBytes + size + (splits ? envelopeBytes : 0) > MAX_BYTES) {
+          context.truncated = true;
+          break;
+        }
+        totalBytes += size;
+        emitted++;
+        if (splits) {
+          carried = { entry, size };
+          const closing = yieldPart(elements);
+          if (!closing.more) carried = undefined;
+          return closing;
+        }
+        elements.push(entry);
+        partBytes += size;
+      }
+      return close(elements, false);
+    },
+    cancel() {
+      assertOpen();
+      const elements = carried ? [carried.entry] : [];
+      if (stack.length) context.truncated = true;
+      return close(elements, false);
+    },
+  };
 }

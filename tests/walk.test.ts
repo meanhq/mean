@@ -2,7 +2,7 @@
 
 import Ajv from 'ajv/dist/2020.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { walk } from '../packages/core/runtime/walk.js';
+import { type Entry, startWalk, type WalkPart } from '../packages/core/runtime/walk.js';
 import schema from '../packages/protocol/schema/dom.v1.json';
 
 const validate = new Ajv({ strict: false }).compile(schema);
@@ -20,14 +20,45 @@ const rect = (x = 0, y = 0, width = 100, height = 100): DOMRect => ({
     return {};
   },
 });
-const run = () => {
-  const result = walk(id, { width: 1000, height: 1000, dpr: 1 }, [], {
+const utf8 = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+const start = (deadline = Infinity) =>
+  startWalk(id, { width: 1000, height: 1000, dpr: 1 }, [], {
     projectRoot: '',
-    deadline: Infinity,
+    deadline,
     truncated: false,
   });
-  expect(validate(result), JSON.stringify(validate.errors)).toBe(true);
-  return result;
+const checkPart = (part: WalkPart, number: number) => {
+  expect(validate(part), JSON.stringify(validate.errors)).toBe(true);
+  expect(part.part).toBe(number);
+  expect(utf8(part)).toBeLessThanOrEqual(256 * 1024);
+  if (part.more) expect(part.truncated).toBe(false);
+  const order = part.elements.map((entry) => [entry.depth, entry.rect.width * entry.rect.height]);
+  for (let index = 1; index < order.length; index++) {
+    const [previousDepth = 0, previousArea = 0] = order[index - 1] ?? [];
+    const [depth = 0, area = 0] = order[index] ?? [];
+    expect(previousDepth > depth || (previousDepth === depth && previousArea <= area)).toBe(true);
+  }
+};
+// Drains a whole walk with a per-slice budget, checking every part on the way.
+const run = (sliceBudget = Infinity, deadline = Infinity) => {
+  const traversal = start(deadline);
+  const parts: WalkPart[] = [];
+  const elements: Entry[] = [];
+  for (;;) {
+    const part = traversal.slice(performance.now() + sliceBudget);
+    checkPart(part, parts.length + 1);
+    parts.push(part);
+    elements.push(...part.elements);
+    if (!part.more) break;
+  }
+  const last = parts.at(-1);
+  if (!last) throw new Error('A walk has at least one part');
+  return {
+    elements,
+    truncated: last.truncated,
+    parts,
+    bytes: parts.reduce((n, p) => n + utf8(p), 0),
+  };
 };
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -62,7 +93,7 @@ describe('Walk algorithm and budget', () => {
     document.body.innerHTML =
       '<main>Direct <span id="small">Child</span><input value="SECRET"><input type="password" id="password"><textarea>SECRET</textarea><select><option>SECRET</option></select><div contenteditable><span>SECRET</span></div><div hidden>SECRET</div><script>SECRET</script></main>';
     const result = run();
-    expect(JSON.stringify(result)).not.toContain('SECRET');
+    expect(JSON.stringify(result.parts)).not.toContain('SECRET');
     expect(result.elements.some((entry) => entry.id === 'password')).toBe(false);
     expect(result.elements.find((entry) => entry.tag === 'main')?.text).toBe('Direct');
     const peers = result.elements.filter((entry) => entry.depth === 3);
@@ -103,7 +134,7 @@ describe('Walk algorithm and budget', () => {
     host.attachShadow({ mode: 'open' }).innerHTML = '<b>SHADOW</b>';
     const result = run();
     expect(result.elements.some((entry) => entry.id === 'small')).toBe(true);
-    expect(JSON.stringify(result)).not.toContain('SHADOW');
+    expect(JSON.stringify(result.parts)).not.toContain('SHADOW');
   });
   it('counts hidden siblings in nth-of-type', () => {
     document.body.innerHTML = '<div hidden></div><div id="small"></div>';
@@ -112,11 +143,11 @@ describe('Walk algorithm and budget', () => {
     );
   });
   it('caps element count, depth and field sizes', () => {
-    document.body.innerHTML = `<div>${'<b>word</b>'.repeat(1100)}</div>`;
+    document.body.innerHTML = `<div>${'<b>word</b>'.repeat(4100)}</div>`;
     const result = run();
-    expect(result.elements).toHaveLength(1000);
+    expect(result.elements).toHaveLength(4000);
     expect(result.truncated).toBe(true);
-    expect(new TextEncoder().encode(JSON.stringify(result)).length).toBeLessThanOrEqual(256 * 1024);
+    expect(result.parts.length).toBe(4);
     document.body.innerHTML = `${'<div>'.repeat(140)}deep${'</div>'.repeat(140)}`;
     expect(Math.max(...run().elements.map((entry) => entry.depth))).toBe(128);
     document.body.innerHTML = `<div id="${'x'.repeat(129)}">${'\u{1f600}'.repeat(81)}</div>`;
@@ -127,9 +158,9 @@ describe('Walk algorithm and budget', () => {
     document.body.innerHTML = `<b>${' '.repeat(2047)}\u{1f600}Visible</b>`;
     expect(run().elements[0]?.text).toBe('\u{1f600}Visible');
   });
-  it('clips to rectangular ancestors and omits subtrees with unsupported clips', () => {
+  it('clips to rectangular ancestors and omits descendants of unsupported clips', () => {
     document.body.innerHTML =
-      '<div id="clip" style="overflow:hidden"><b id="small">Visible</b></div><div style="clip-path:circle(50%)"><b>UNSUPPORTED</b></div>';
+      '<div id="clip" style="overflow:hidden"><b id="small">Visible</b></div><div style="clip-path:circle(50%)"><b>UNSUPPORTED</b></div><div id="rounded" style="overflow:hidden;border-radius:4px">Rounded<b id="inside">CORNER</b></div>';
     const clip = document.getElementById('clip');
     if (!clip) throw new Error('Missing clipping element');
     Object.defineProperties(clip, { clientWidth: { value: 5 }, clientHeight: { value: 5 } });
@@ -140,30 +171,83 @@ describe('Walk algorithm and budget', () => {
       width: 0.005,
       height: 0.005,
     });
-    expect(JSON.stringify(result)).not.toContain('UNSUPPORTED');
+    expect(JSON.stringify(result.parts)).not.toContain('UNSUPPORTED');
+    // The rounded container keeps its own box and text; only its descendants' geometry is unknown.
+    expect(result.elements.find((entry) => entry.id === 'rounded')?.text).toBe('Rounded');
+    expect(JSON.stringify(result.parts)).not.toContain('CORNER');
   });
-  it('stops at 10000 visited nodes and 256 KiB of UTF-8', () => {
-    document.body.innerHTML = `${'<!-- ignored -->'.repeat(10001)}<b>TOO LATE</b>`;
+  it('stops at 40000 visited nodes and 2 MiB of UTF-8 across parts', () => {
+    document.body.innerHTML = `${'<!-- ignored -->'.repeat(40001)}<b>TOO LATE</b>`;
     const visited = run();
     expect(visited.truncated).toBe(true);
-    expect(JSON.stringify(visited)).not.toContain('TOO LATE');
+    expect(JSON.stringify(visited.parts)).not.toContain('TOO LATE');
     const classes = Array.from(
       { length: 16 },
       (_, index) => `class${index}${'x'.repeat(120)}`,
     ).join(' ');
-    document.body.innerHTML = `<b class="${classes}">text</b>`.repeat(300);
+    document.body.innerHTML = `<b class="${classes}">text</b>`.repeat(1100);
     const bytes = run();
     expect(bytes.truncated).toBe(true);
-    expect(bytes.elements.length).toBeLessThan(300);
-    expect(new TextEncoder().encode(JSON.stringify(bytes)).length).toBeLessThanOrEqual(256 * 1024);
+    expect(bytes.elements.length).toBeLessThan(1100);
+    expect(bytes.elements.length).toBeGreaterThan(700);
+    expect(bytes.parts.length).toBeGreaterThan(4);
+    expect(bytes.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
   });
   it('returns an empty truncated result when the deadline has already passed', () => {
-    expect(
-      walk(id, { width: 1, height: 1, dpr: 1 }, [], {
-        projectRoot: '',
-        deadline: -1,
-        truncated: false,
-      }),
-    ).toMatchObject({ elements: [], truncated: true });
+    expect(start(-1).slice(Infinity)).toMatchObject({
+      elements: [],
+      truncated: true,
+      part: 1,
+      more: false,
+    });
+  });
+  it('yields at the slice deadline, sorts each part on its own and covers every element', () => {
+    document.body.innerHTML = Array.from(
+      { length: 60 },
+      (_, index) => `<section><p id="p${index}">${index}</p></section>`,
+    ).join('');
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => ++clock);
+    const result = run(4);
+    expect(result.parts.length).toBeGreaterThan(5);
+    expect(result.parts.every((part, index) => part.more === index < result.parts.length - 1));
+    expect(result.truncated).toBe(false);
+    const ids = new Set(result.elements.map((entry) => entry.id));
+    for (let index = 0; index < 60; index++) expect(ids.has(`p${index}`)).toBe(true);
+    expect(result.elements.filter((entry) => entry.tag === 'section')).toHaveLength(60);
+    expect(result.elements.filter((entry) => entry.tag === 'body')).toHaveLength(1);
+    // The same document in one slice yields the same inventory in a different grouping.
+    const whole = run();
+    expect(whole.parts).toHaveLength(1);
+    expect(whole.elements.map((entry) => entry.elementPath).sort()).toEqual(
+      result.elements.map((entry) => entry.elementPath).sort(),
+    );
+  });
+  it('closes at the wall deadline with a final truncated part holding what it inventoried', () => {
+    document.body.innerHTML = '<p>text</p>'.repeat(60);
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => ++clock);
+    const result = run(8, 40);
+    expect(result.parts.length).toBeGreaterThan(1);
+    expect(result.truncated).toBe(true);
+    expect(result.elements.length).toBeGreaterThan(0);
+    expect(result.elements.length).toBeLessThan(60);
+  });
+  it('closes a cancelled walk with what it holds and refuses to continue', () => {
+    document.body.innerHTML = '<b>one</b>'.repeat(20);
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => ++clock);
+    const traversal = start();
+    const first = traversal.slice(clock + 3);
+    checkPart(first, 1);
+    expect(first.more).toBe(true);
+    const final = traversal.cancel();
+    checkPart(final, 2);
+    expect(final).toMatchObject({ more: false, truncated: true });
+    expect(() => traversal.slice(Infinity)).toThrow();
+    expect(() => traversal.cancel()).toThrow();
+    const complete = start();
+    expect(complete.slice(Infinity).more).toBe(false);
+    expect(() => complete.cancel()).toThrow();
   });
 });
