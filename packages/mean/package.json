@@ -1,6 +1,6 @@
 {
   "name": "@meanhq/mean",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Connects your web app's dev server to Mean, so annotations on your running app carry component names and source locations. Development only, one line of configuration.",
   "type": "module",
   "license": "MIT",
