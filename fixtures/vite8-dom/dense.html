@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Mean dense fixture</title></head>
+<body>
+  <main id="dense" style="position:fixed;inset:0;display:grid;grid-template-columns:repeat(50,minmax(0,1fr));grid-template-rows:repeat(50,minmax(0,1fr))"></main>
+  <script type="module">
+    const grid = document.getElementById('dense');
+    for (let index = 0; index < 2500; index++) {
+      const cell = document.createElement('span');
+      cell.className = 'cell';
+      cell.textContent = String(index);
+      grid.append(cell);
+    }
+  </script>
+</body>
+</html>

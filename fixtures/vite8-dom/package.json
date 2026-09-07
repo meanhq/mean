@@ -1,0 +1,14 @@
+{
+  "name": "mean-fixture-vite8-dom",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "vite": "8.2.2"
+  }
+}
