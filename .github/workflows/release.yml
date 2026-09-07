@@ -60,7 +60,8 @@ jobs:
           git add packages/mean/package.json
           git commit -m "chore: release ${{ steps.bump.outputs.tag }}"
           git tag "${{ steps.bump.outputs.tag }}"
-          git push origin HEAD:main --follow-tags
+          # A lightweight tag is not carried by --follow-tags; name it.
+          git push origin HEAD:main "refs/tags/${{ steps.bump.outputs.tag }}"
 
       - name: Publish to npm
         env:
