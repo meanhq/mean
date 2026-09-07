@@ -30,6 +30,8 @@ export interface Result {
    */
   elements: Element[];
   truncated: boolean;
+  part?: number;
+  more?: boolean;
   [k: string]: unknown;
 }
 export interface Viewport {
