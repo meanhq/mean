@@ -7,23 +7,20 @@ import { toProjectSource } from '../packages/protocol/source.js';
 
 const context = (): Context => ({ projectRoot: '/project', deadline: Infinity, truncated: false });
 describe('Framework adapters', () => {
-  it('stops scanning after 64 keys and ignores inherited fibre metadata', () => {
+  it('reads at most 64 own keys and ignores inherited fibre metadata', () => {
     const element = document.createElement('div');
     const prototype: Record<string, unknown> = Object.create(Object.getPrototypeOf(element));
-    for (let index = 0; index < 200; index++) prototype[`inherited${index}`] = true;
     prototype.__reactFiber$inherited = { type: { displayName: 'NotAnOwner' } };
     Object.setPrototypeOf(element, prototype);
-    const own = vi.spyOn(Object, 'hasOwn');
-    let detected: boolean;
-    let candidates: number;
-    try {
-      detected = react.detect(element);
-      candidates = own.mock.calls.length;
-    } finally {
-      own.mockRestore();
-    }
-    expect(detected).toBe(false);
-    expect(candidates).toBe(64);
+    expect(react.detect(element)).toBe(false);
+    const late = element as unknown as Record<string, unknown>;
+    for (let index = 0; index < 64; index++) late[`expando${index}`] = true;
+    late.__reactFiber$late = { type: { displayName: 'TooLate' } };
+    expect(react.detect(element)).toBe(false);
+    const early = document.createElement('div') as unknown as Record<string, unknown>;
+    for (let index = 0; index < 63; index++) early[`expando${index}`] = true;
+    early.__reactFiber$early = { type: { displayName: 'Owner' } };
+    expect(react.detect(early as unknown as Element)).toBe(true);
   });
   it('prefers the exact stamp over fibre source and keeps repeated names nearest first', () => {
     const element = document.createElement('button');

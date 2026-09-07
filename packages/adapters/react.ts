@@ -11,13 +11,13 @@ import { readSourceStamp } from './source.js';
 
 const MAX_KEY_CANDIDATES = 64;
 
-// Inherited enumerable properties count towards the cap: a hostile prototype cannot force a long scan.
+// Own keys only, so the DOM prototype chain is never enumerated; the cap bounds expando-heavy elements.
 function fiberOf(element: Element): unknown {
-  let candidates = 0;
-  for (const key in element) {
-    if (++candidates > MAX_KEY_CANDIDATES) break;
-    if (!Object.hasOwn(element, key)) continue;
-    if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'))
+  const keys = Object.keys(element);
+  const limit = Math.min(keys.length, MAX_KEY_CANDIDATES);
+  for (let index = 0; index < limit; index++) {
+    const key = keys[index];
+    if (key && (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')))
       return (element as unknown as Record<string, unknown>)[key];
   }
 }
