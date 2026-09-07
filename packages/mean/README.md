@@ -1,6 +1,6 @@
 # @meanhq/mean
 
-[Mean](https://mean.app) is visual handoff for humans and agents. Freeze or record your screen, annotate with gestures, and hand the finished session to a human or a coding agent.
+[Mean](https://mean.app) is visual handoff for humans and agents. Freeze or record your screen, annotate with gestures, and hand the finished session to a human or an agent.
 
 This package connects your web app's development server to Mean. When you mark an element of your running app, the annotation also carries its component name and source file and line, so an agent can go straight to the code. It runs in development only and adds nothing to the page.
 
