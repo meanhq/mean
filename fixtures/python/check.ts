@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
-import { createFakeMean, freePort, median } from '../fake-mean/helpers.js';
+import { createFakeMean, freePort, median, walkTimingScript } from '../fake-mean/helpers.js';
 
 const repo = resolve(import.meta.dirname, '../..');
 const home = await mkdtemp(join(tmpdir(), 'mean-python-'));
@@ -63,32 +63,7 @@ try {
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 1,
   });
-  await context.addInitScript(() => {
-    const timings: number[] = [];
-    (window as unknown as { __meanWalkTimings: number[] }).__meanWalkTimings = timings;
-    const Native = WebSocket;
-    window.WebSocket = class extends Native {
-      starts = new Map<string, number>();
-      constructor(url: string | URL, protocols?: string | string[]) {
-        super(url, protocols);
-        this.addEventListener('message', (event) => {
-          const message = JSON.parse(String(event.data));
-          if (message.type === 'walk') this.starts.set(message.requestId, performance.now());
-        });
-      }
-      override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-        if (typeof data === 'string') {
-          const message = JSON.parse(data);
-          const start = this.starts.get(message.requestId);
-          if (start !== undefined) {
-            timings.push(performance.now() - start);
-            this.starts.delete(message.requestId);
-          }
-        }
-        super.send(data);
-      }
-    };
-  });
+  await context.addInitScript({ content: walkTimingScript });
   const cold: number[] = [];
   const warm: number[] = [];
   const coldRoundtrip: number[] = [];

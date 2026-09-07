@@ -1,4 +1,5 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,13 +8,21 @@ import { promisify } from 'node:util';
 import { type BrowserContext, chromium, type Page } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { createFakeMean, freePort, median } from '../fixtures/fake-mean/helpers.js';
+import {
+  createFakeMean,
+  type FakeMean,
+  freePort,
+  median,
+  readWalkTiming,
+  walkTimingScript,
+} from '../fixtures/fake-mean/helpers.js';
 
 const repo = resolve(import.meta.dirname, '..');
 const exec = promisify(execFile);
 const cases = [
   {
     framework: 'dom',
+    label: 'dom',
     directory: 'vite-dom',
     file: 'index.html',
     line: 7,
@@ -22,7 +31,18 @@ const cases = [
     selector: 'button',
   },
   {
+    framework: 'dom',
+    label: 'dom on Vite 8',
+    directory: 'vite8-dom',
+    file: 'index.html',
+    line: 7,
+    column: 5,
+    component: undefined,
+    selector: 'button',
+  },
+  {
     framework: 'vue',
+    label: 'vue',
     directory: 'vue-vite',
     file: 'src/App.vue',
     line: 6,
@@ -32,6 +52,7 @@ const cases = [
   },
   {
     framework: 'svelte',
+    label: 'svelte',
     directory: 'svelte-vite',
     file: 'src/App.svelte',
     line: 6,
@@ -41,6 +62,7 @@ const cases = [
   },
   {
     framework: 'react',
+    label: 'react',
     directory: 'vite-react',
     file: 'src/main.tsx',
     line: 11,
@@ -117,36 +139,8 @@ async function start(fixture: string, home: string, preview = false) {
 }
 
 async function instrument(context: BrowserContext) {
-  await context.addInitScript({
-    content: `(() => {
-    const NativeWebSocket = window.WebSocket;
-    const starts = new Map();
-    window.__meanWalkTimings = [];
-    window.__documentIdentity = Math.random();
-    window.WebSocket = class extends NativeWebSocket {
-      constructor(url, protocols) {
-        super(url, protocols);
-        this.addEventListener('message', event => {
-          try {
-            const message = JSON.parse(String(event.data));
-            if (message.type === 'walk') starts.set(message.requestId, performance.now());
-          } catch {}
-        });
-      }
-      send(data) {
-        try {
-          const message = JSON.parse(String(data));
-          const started = starts.get(message.requestId);
-          if (started !== undefined && (message.type === 'walk.result' || message.type === 'error')) {
-            window.__meanWalkTimings.push(performance.now() - started);
-            starts.delete(message.requestId);
-          }
-        } catch {}
-        super.send(data);
-      }
-    };
-  })();`,
-  });
+  await context.addInitScript({ content: walkTimingScript });
+  await context.addInitScript({ content: 'window.__documentIdentity = Math.random();' });
 }
 
 async function stress(page: Page) {
@@ -224,9 +218,112 @@ async function assertNoEndpoint(origin: string) {
   expect(await runtime.text()).not.toMatch(/mean-dom-v1|data-mean-runtime|new WebSocket/);
 }
 
+// Spec, Walk algorithm and budget: 2500 visible cells need several parts; each is sorted on its own,
+// a new probe closes a pending walk, and the runtime holds no timer once the final part has left.
+async function dense(context: BrowserContext, mean: FakeMean, origin: string, label: string) {
+  const page = await context.newPage();
+  await page.goto(`${origin}/dense.html`, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => document.querySelectorAll('.cell').length === 2500);
+  const { pageId } = await mean.take((item) => item.type === 'page.open' && item.origin === origin);
+  const viewport = { width: 1200, height: 800 };
+  const probe = await mean.probe(pageId);
+  expect(probe.message.type).toBe('probe.result');
+  const walk = await mean.walk(page, pageId, String(probe.message.requestId), viewport);
+  expect(walk.message.type).toBe('walk.result');
+  expect(walk.parts).toBeGreaterThan(1);
+  expect(walk.message.truncated).toBe(false);
+  const cells = (walk.message.elements as Array<Record<string, unknown>>).filter(
+    (element) => element.tag === 'span' && (element.classes as string[])[0] === 'cell',
+  );
+  expect(cells).toHaveLength(2500);
+  expect(new Set(cells.map((cell) => cell.text)).size).toBe(2500);
+  expect(walk.pageElapsed).toBeLessThanOrEqual(25);
+  const timing = await page.evaluate(() => {
+    const walks = (window as unknown as { __meanWalks: Map<string, unknown> }).__meanWalks;
+    return [...walks.values()];
+  });
+  expect(timing).toEqual([]);
+  console.log(
+    `${label} dense: 2500 cells in ${walk.parts} parts; first part ${walk.pageElapsed.toFixed(2)} ms; complete ${walk.pageCompleted.toFixed(2)} ms; roundtrip ${walk.completed.toFixed(2)} ms`,
+  );
+
+  // Timers: one zero-delay timer between parts and none once the final part has left.
+  const timed = await mean.probe(pageId);
+  const timedWalk = randomUUID();
+  mean.send(pageId, {
+    v: 1,
+    type: 'walk',
+    requestId: timedWalk,
+    probeId: timed.message.requestId,
+    webArea: { x: 0, y: 0, ...viewport },
+    deviceScale: 1,
+  });
+  const received: Record<string, unknown>[] = [];
+  do {
+    const envelope = await mean.take(
+      (item) => item.type === 'page.message' && item.message?.requestId === timedWalk,
+    );
+    if (envelope.message) received.push(envelope.message);
+  } while (received.at(-1)?.more === true);
+  await page.waitForTimeout(250);
+  const timers = await readWalkTiming(page, timedWalk);
+  expect(timers.parts).toBe(received.length);
+  expect(timers.timers).toBe(received.length - 1);
+  expect(timers.timersAfter).toBe(0);
+
+  // Cancellation: a probe queued behind the walk request reaches the page between slices and
+  // closes the walk with a final, truncated part before it is answered. Chromium orders the
+  // pending message task and the zero-delay timer as it likes, so the interleaving is retried.
+  let cancelledParts: Record<string, unknown>[] = [];
+  let attempts = 0;
+  while (attempts < 10 && cancelledParts.at(-1)?.truncated !== true) {
+    attempts++;
+    const cancelled = await mean.probe(pageId);
+    const cancelledWalk = randomUUID();
+    mean.send(pageId, {
+      v: 1,
+      type: 'walk',
+      requestId: cancelledWalk,
+      probeId: cancelled.message.requestId,
+      webArea: { x: 0, y: 0, ...viewport },
+      deviceScale: 1,
+    });
+    const interrupting = mean.probe(pageId);
+    cancelledParts = [];
+    do {
+      const envelope = await mean.take(
+        (item) => item.type === 'page.message' && item.message?.requestId === cancelledWalk,
+      );
+      if (envelope.message) cancelledParts.push(envelope.message);
+    } while (cancelledParts.at(-1)?.more === true);
+    expect((await interrupting).message.type).toBe('probe.result');
+    await expect(
+      mean.take(
+        (item) => item.type === 'page.message' && item.message?.requestId === cancelledWalk,
+        200,
+      ),
+    ).rejects.toThrow();
+    const cancelledTiming = await readWalkTiming(page, cancelledWalk);
+    expect(cancelledTiming.parts).toBe(cancelledParts.length);
+    expect(cancelledTiming.timersAfter).toBe(0);
+  }
+  const cancelledCount = cancelledParts.reduce(
+    (total, part) => total + (part.elements as unknown[]).length,
+    0,
+  );
+  expect(cancelledCount).toBeLessThan(cells.length);
+  expect(cancelledParts.at(-1)).toMatchObject({ more: false, truncated: true });
+  expect(cancelledParts.at(-1)?.part).toBe(cancelledParts.length);
+  console.log(
+    `${label} dense: ${received.length} parts on ${timers.timers} zero-delay timers; a probe cancelled a walk after part ${cancelledParts.length - 1} with a final part ${cancelledParts.length} holding ${cancelledCount} of ${cells.length} cells (attempt ${attempts})`,
+  );
+  await page.close();
+  await mean.take((item) => item.type === 'page.close' && item.pageId === pageId);
+}
+
 describe.sequential('Framework adapters: Vite integration', () => {
   for (const fixtureCase of cases) {
-    it(`${fixtureCase.framework}: exact evidence, independent fields, HMR, large-page timing and production exclusion`, async () => {
+    it(`${fixtureCase.label}: exact evidence, independent fields, HMR, large-page timing and production exclusion`, async () => {
       const originalFixture = join(repo, 'fixtures', fixtureCase.directory);
       const originalPath = join(originalFixture, fixtureCase.file);
       const original = await readFile(originalPath, 'utf8');
@@ -246,7 +343,7 @@ describe.sequential('Framework adapters: Vite integration', () => {
         const dev = await start(fixture, home);
         server = dev.child;
         browser = await chromium.launch({ headless: true });
-        console.log(`${fixtureCase.framework}: Chromium ${browser.version()}`);
+        console.log(`${fixtureCase.label}: Chromium ${browser.version()}`);
         const context = await browser.newContext({
           viewport: { width: 1200, height: 800 },
           deviceScaleFactor: 1,
@@ -314,7 +411,7 @@ describe.sequential('Framework adapters: Vite integration', () => {
           });
         }
         console.log(
-          `${fixtureCase.framework}: static fixture source verified separately from dynamic stress DOM`,
+          `${fixtureCase.label}: static fixture source verified separately from dynamic stress DOM`,
         );
 
         const identity = await current.page.evaluate('window.__documentIdentity');
@@ -407,14 +504,18 @@ describe.sequential('Framework adapters: Vite integration', () => {
           await close(other);
         }
 
+        if (fixtureCase.framework === 'dom')
+          await dense(context, mean, dev.origin, fixtureCase.label);
+
         const count = 10;
         for (const mode of ['cold', 'warm'] as const) {
           const pageTimes: number[] = [];
+          const completions: number[] = [];
           const roundtrips: number[] = [];
           const probes: number[] = [];
           const totals: number[] = [];
           const counts: number[] = [];
-          let truncated = 0;
+          const parts: number[] = [];
           const warm = mode === 'warm' ? await open() : undefined;
           if (warm) {
             await stress(warm.page);
@@ -426,16 +527,19 @@ describe.sequential('Framework adapters: Vite integration', () => {
               try {
                 if (!warm) await stress(sample.page);
                 const result = await freeze(sample);
-                const elements = result.message.elements as unknown[];
-                expect(elements.length).toBeGreaterThan(0);
-                expect(elements.length).toBeLessThanOrEqual(1000);
-                expect(result.message.truncated).toBe(true);
+                const elements = result.message.elements as Array<Record<string, unknown>>;
+                // Every stress node arrives, across as many parts as the page needs.
+                expect(
+                  elements.filter((element) => element.tag === 'span' && element.text === 'Node'),
+                ).toHaveLength(1500);
+                expect(result.message.truncated).toBe(false);
                 pageTimes.push(result.pageElapsed);
+                completions.push(result.pageCompleted);
                 roundtrips.push(result.elapsed);
                 probes.push(result.probeElapsed);
                 totals.push(result.probeElapsed + result.elapsed);
                 counts.push(elements.length);
-                if (result.message.truncated) truncated++;
+                parts.push(result.parts);
               } finally {
                 if (!warm) await close(sample);
               }
@@ -444,7 +548,7 @@ describe.sequential('Framework adapters: Vite integration', () => {
             if (warm) await close(warm);
           }
           console.log(
-            `${fixtureCase.framework} ${mode}: ${count} samples, 1500 visible dynamic DOM nodes; ${mode === 'cold' ? 'fresh page and first probe including lazy import (browser HTTP cache may be warm)' : 'same page after one excluded warm-up freeze'}; probe p50=${median(probes).toFixed(2)} ms; page walk p50=${median(pageTimes).toFixed(2)} ms; walk roundtrip p50=${median(roundtrips).toFixed(2)} ms; probe and walk roundtrip sum p50=${median(totals).toFixed(2)} ms; emitted min=${Math.min(...counts)} max=${Math.max(...counts)}; truncated=${truncated}/${count}`,
+            `${fixtureCase.label} ${mode}: ${count} samples, 1500 visible dynamic DOM nodes; ${mode === 'cold' ? 'fresh page and first probe including lazy import (browser HTTP cache may be warm)' : 'same page after one excluded warm-up freeze'}; probe p50=${median(probes).toFixed(2)} ms; first part p50=${median(pageTimes).toFixed(2)} ms; complete p50=${median(completions).toFixed(2)} ms; first part roundtrip p50=${median(roundtrips).toFixed(2)} ms; probe and first part roundtrip sum p50=${median(totals).toFixed(2)} ms; parts p50=${median(parts)}; emitted min=${Math.min(...counts)} max=${Math.max(...counts)}`,
           );
           expect(median(pageTimes)).toBeLessThanOrEqual(20);
         }

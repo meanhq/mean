@@ -12,29 +12,21 @@ import {
   createFakeMean,
   freePort,
   median,
+  walkTimingScript,
 } from '../fixtures/fake-mean/helpers.js';
 
-const instrumentation = `(() => {
+const instrumentation = `${walkTimingScript}
+(() => {
  const Native = window.WebSocket;
- const starts = new Map();
- window.__meanWalkTimings = [];
  window.__meanMessages = 0;
  window.__meanSocketCount = 0;
  window.WebSocket = class extends Native {
   constructor(url, protocols) {
    super(url, protocols);
    if (this.url.includes('/__mean/')) window.__meanSocketCount++;
-   this.addEventListener('message', event => {
-    try { const message = JSON.parse(String(event.data));
-     if (message.type === 'walk') starts.set(message.requestId, performance.now());
-    } catch {}
-   });
   }
   send(data) {
    if (this.url.includes('/__mean/')) window.__meanMessages++;
-   try { const message = JSON.parse(String(data)); const start = starts.get(message.requestId);
-    if (start !== undefined) { window.__meanWalkTimings.push(performance.now() - start); starts.delete(message.requestId); }
-   } catch {}
    super.send(data);
   }
  };

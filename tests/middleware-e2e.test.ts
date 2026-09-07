@@ -16,28 +16,21 @@ import { promisify } from 'node:util';
 import { chromium, type Page } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { createFakeMean, freePort, median } from '../fixtures/fake-mean/helpers.js';
+import {
+  createFakeMean,
+  freePort,
+  median,
+  walkTimingScript,
+} from '../fixtures/fake-mean/helpers.js';
 
 const exec = promisify(execFile);
-const instrumentation = `(() => {
+const instrumentation = `${walkTimingScript}
+(() => {
  const Native = window.WebSocket;
- const starts = new Map();
- window.__meanWalkTimings = [];
  window.__meanMessages = 0;
  window.WebSocket = class extends Native {
-  constructor(url, protocols) {
-   super(url, protocols);
-   this.addEventListener('message', event => {
-    try { const message = JSON.parse(String(event.data));
-     if (message.type === 'walk') starts.set(message.requestId, performance.now());
-    } catch {}
-   });
-  }
   send(data) {
    if (this.url.includes('/__mean/')) window.__meanMessages++;
-   try { const message = JSON.parse(String(data)); const start = starts.get(message.requestId);
-    if (start !== undefined) { window.__meanWalkTimings.push(performance.now() - start); starts.delete(message.requestId); }
-   } catch {}
    super.send(data);
   }
  };

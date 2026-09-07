@@ -2,7 +2,13 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium, type Page } from 'playwright';
-import { browserBundleSizes, createFakeMean, freePort, median } from './helpers.js';
+import {
+  browserBundleSizes,
+  createFakeMean,
+  freePort,
+  median,
+  walkTimingScript,
+} from './helpers.js';
 
 const repo = resolve(import.meta.dirname, '../..');
 const fixture = resolve(import.meta.dirname, '../vite-react');
@@ -55,39 +61,14 @@ try {
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 1,
   });
+  await context.addInitScript({ content: walkTimingScript });
   await context.addInitScript({
     content: `(() => {
-      const NativeWebSocket = window.WebSocket;
-      const starts = new Map();
-      const timings = [];
-      window.__meanWalkTimings = timings;
       window.__meanTreeWalks = 0;
       const createTreeWalker = document.createTreeWalker.bind(document);
       document.createTreeWalker = (...args) => {
         window.__meanTreeWalks += 1;
         return createTreeWalker(...args);
-      };
-      window.WebSocket = class extends NativeWebSocket {
-        constructor(url, protocols) {
-          super(url, protocols);
-          this.addEventListener('message', (event) => {
-            try {
-              const message = JSON.parse(String(event.data));
-              if (message.type === 'walk') starts.set(message.requestId, performance.now());
-            } catch {}
-          });
-        }
-        send(data) {
-          try {
-            const message = JSON.parse(String(data));
-            const started = starts.get(message.requestId);
-            if ((message.type === 'walk.result' || message.type === 'error') && started !== undefined) {
-              timings.push(performance.now() - started);
-              starts.delete(message.requestId);
-            }
-          } catch {}
-          super.send(data);
-        }
       };
     })();`,
   });
@@ -170,6 +151,7 @@ try {
 
   const cold: number[] = [];
   const coldRoundtrip: number[] = [];
+  const coldComplete: number[] = [];
   for (let index = 0; index < 20; index++) {
     const current = await openFixture();
     const currentProbe = await probe(current.pageId);
@@ -184,6 +166,7 @@ try {
       throw new Error(`Cold walk failed: ${JSON.stringify(result.message)}`);
     cold.push(result.pageElapsed);
     coldRoundtrip.push(result.elapsed);
+    coldComplete.push(result.pageCompleted);
     await current.page.close();
     await take((item) => item.type === 'page.close' && item.pageId === current.pageId);
   }
@@ -191,6 +174,7 @@ try {
   const warmPage = await openFixture();
   const warm: number[] = [];
   const warmRoundtrip: number[] = [];
+  const warmComplete: number[] = [];
   for (let index = 0; index < 20; index++) {
     const currentProbe = await probe(warmPage.pageId);
     const currentViewport = currentProbe.message.viewport as { width: number; height: number };
@@ -204,23 +188,24 @@ try {
       throw new Error(`Warm walk failed: ${JSON.stringify(result.message)}`);
     warm.push(result.pageElapsed);
     warmRoundtrip.push(result.elapsed);
+    warmComplete.push(result.pageCompleted);
   }
 
   console.log('listener: authenticated loopback connection accepted');
   console.log('relay: connected; page opened');
   console.log(`probe: ${firstProbe.message.type}; ${firstProbe.elapsed.toFixed(2)} ms`);
   console.log(
-    `walk: ${elements.length} elements; truncated=${String(firstWalk.message.truncated)}; ${firstWalk.elapsed.toFixed(2)} ms`,
+    `walk: ${elements.length} elements in ${firstWalk.parts} parts; truncated=${String(firstWalk.message.truncated)}; first part ${firstWalk.elapsed.toFixed(2)} ms; complete ${firstWalk.completed.toFixed(2)} ms`,
   );
   console.log(`source: ${String(save.component)} at ${JSON.stringify(save.source)}`);
   console.log('privacy: input, contenteditable, hidden subtree and iframe contents absent');
   const coldP50 = median(cold);
   const warmP50 = median(warm);
   console.log(
-    `cold page walk p50 (20 fresh pages): ${coldP50.toFixed(2)} ms; roundtrip ${median(coldRoundtrip).toFixed(2)} ms; budget 20 ms`,
+    `cold page walk p50 (20 fresh pages): ${coldP50.toFixed(2)} ms to the first part; roundtrip ${median(coldRoundtrip).toFixed(2)} ms; complete ${median(coldComplete).toFixed(2)} ms; budget 20 ms`,
   );
   console.log(
-    `warm page walk p50 (20 runs): ${warmP50.toFixed(2)} ms; roundtrip ${median(warmRoundtrip).toFixed(2)} ms; budget 20 ms`,
+    `warm page walk p50 (20 runs): ${warmP50.toFixed(2)} ms to the first part; roundtrip ${median(warmRoundtrip).toFixed(2)} ms; complete ${median(warmComplete).toFixed(2)} ms; budget 20 ms`,
   );
   if (coldP50 > 20 || warmP50 > 20) throw new Error('Median page walk exceeded the 20 ms budget');
   console.log(

@@ -9,6 +9,7 @@ const config: UserConfig = defineConfig({
       input: {
         index: fileURLToPath(new URL('./index.html', import.meta.url)),
         other: fileURLToPath(new URL('./other.html', import.meta.url)),
+        dense: fileURLToPath(new URL('./dense.html', import.meta.url)),
       },
     },
   },

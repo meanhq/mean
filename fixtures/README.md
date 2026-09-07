@@ -8,7 +8,8 @@ Run `corepack pnpm check` at the repository root to build, validate and test the
 | `vite-react` | Vite 7.3.6, React 19.2.8, plugin-react 5.2.0 | component names, nearest-first chain and JSX source |
 | `vue-vite` | Vite 7.3.6, Vue 3.5.30, plugin-vue 6.0.4 | component names, nearest-first chain and template source |
 | `svelte-vite` | Vite 7.3.6, Svelte 5.55.1, vite-plugin-svelte 6.2.1 | template source and recorded nested owner names; mounted-root names are absent |
-| `vite-dom` | Vite 7.3.6 | exact tag positions in both HTML entries; no component names |
+| `vite-dom` | Vite 7.3.6 | exact tag positions in both HTML entries; no component names; `dense.html` for multi-part walks |
+| `vite8-dom` | Vite 8.2.2 | the `vite-dom` pages on the `create-vite` default major; same evidence |
 | `next-webpack` | Next 16.3.4, React 19.2.8, Webpack | names, chains and JSX/JavaScript source in both routers |
 | `next-turbopack` | Next 16.3.4, React 19.2.8, Turbopack | names, chains and JSX/JavaScript source in both routers |
 | `webpack` | Webpack 5.110.3, webpack-dev-server 5.2.6, webpack-cli 6.0.1 | plain DOM only |
@@ -63,8 +64,11 @@ The standalone CLI refuses production, and the Python production template omits 
 
 Browser tests check emitted artifacts and production endpoints, schema-valid messages, HMR or reload, and cold and warm page walk p50.
 Cold means the first walk on a fresh page after its probe loads lazy modules; it excludes module loading.
-Page timings run from receipt of a walk request to sending its result. Roundtrip timings also include transport.
-Large-page measurements retain the protocol's 20 ms cooperative budget and may return a truncated prefix.
+Page timings run from receipt of a walk request to sending its first part; completion timings run to the final part. Roundtrip timings also include transport.
+A walk is cooperative and cumulative: the first part leaves within 20 ms of page time, later parts follow 12 ms slices separated by zero-delay timers until the page is covered or a whole-walk cap is hit (4000 elements, 40000 inspections, 2 MiB, 2 s).
+The fake listener merges parts and checks their numbering, per-part order and that only the final part reports truncation.
+The `vite-dom` fixture's `dense.html` builds 2500 visible cells to exercise several parts, cancellation and full coverage.
+`fake-mean/measure.ts` runs the built runtime against any Vite project, for example `corepack pnpm exec tsx fixtures/fake-mean/measure.ts ../my-app`.
 Source-edit checks use temporary fixture copies, never tracked files.
 
 `fake-mean/index.ts` retains its original CLI and output for downstream integration checks.
