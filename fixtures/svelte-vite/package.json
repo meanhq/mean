@@ -1,0 +1,15 @@
+{
+  "name": "@mean-fixtures/svelte-vite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "@sveltejs/vite-plugin-svelte": "6.2.1",
+    "svelte": "5.55.1",
+    "vite": "7.3.6"
+  }
+}

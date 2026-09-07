@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-middleware",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Connect-style middleware behind @meanhq/mean/middleware: serves the runtime and attaches the relay to an existing loopback dev server.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "middleware"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/hosts/middleware"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

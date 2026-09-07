@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-next",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Connects stock Next development pages to Mean through a private loopback relay and source loader.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "next"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/hosts/next"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@mean-fixtures/vite-react",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@meanhq/mean": "workspace:*",
+    "@vitejs/plugin-react": "5.2.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "vite": "7.3.6"
+  }
+}

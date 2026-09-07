@@ -1,0 +1,88 @@
+{
+  "name": "@meanhq/mean",
+  "version": "0.1.0",
+  "description": "Connects your web app's dev server to Mean, so annotations on your running app carry component names and source locations. Development only, one line of configuration.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "TRADEMARKS.md"
+  ],
+  "exports": {
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware.d.ts",
+      "import": "./dist/middleware.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./schema/dom.v1.json": "./dist/schema/dom.v1.json"
+  },
+  "bin": {
+    "mean-dom": "./dist/standalone.js"
+  },
+  "peerDependencies": {
+    "vite": "^7.0.0",
+    "next": "^16.3.0",
+    "vue": "^3.5.30",
+    "svelte": "^5.55.1"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    },
+    "next": {
+      "optional": true
+    },
+    "vue": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@babel/parser": "^7.28.3",
+    "@babel/traverse": "^7.28.3",
+    "magic-string": "^0.30.18",
+    "parse5": "^7.3.0",
+    "ws": "^8.18.3"
+  },
+  "sideEffects": false,
+  "keywords": [
+    "mean",
+    "vite",
+    "react",
+    "vue",
+    "svelte",
+    "middleware",
+    "source-location",
+    "development",
+    "annotations"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/mean"
+  },
+  "homepage": "https://mean.app",
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "author": "Returnlabs Ltd"
+}

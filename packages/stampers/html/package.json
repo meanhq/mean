@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-html",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Stamps development HTML and framework templates with exact source locations.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "html"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/stampers/html"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-jsx",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Stamps development JSX host elements with project-relative source locations, independently of the dev server.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "jsx"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/stampers/jsx"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@mean-fixture/express",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node server.mjs --build",
+    "start": "NODE_ENV=production node dist/server.mjs"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "express": "5.2.1"
+  }
+}

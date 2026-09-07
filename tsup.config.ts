@@ -1,0 +1,51 @@
+import { defineConfig } from 'tsup';
+
+export default defineConfig([
+  {
+    entry: {
+      vite: 'packages/hosts/vite/vite.ts',
+      next: 'packages/hosts/next/next.ts',
+      middleware: 'packages/hosts/middleware/middleware.ts',
+      standalone: 'packages/hosts/standalone/cli.ts',
+      protocol: 'packages/protocol/src/index.ts',
+    },
+    outDir: 'packages/mean/dist',
+    format: ['esm'],
+    platform: 'node',
+    external: [
+      '@babel/parser',
+      '@babel/traverse',
+      'magic-string',
+      'parse5',
+      'vue/compiler-sfc',
+      'svelte/compiler',
+      'ws',
+      'vite',
+      'next',
+      'esbuild',
+    ],
+    target: 'node20',
+    dts: true,
+    splitting: false,
+  },
+  {
+    entry: { 'jsx-loader': 'packages/stampers/jsx/loader.ts' },
+    outDir: 'packages/mean/dist',
+    format: ['cjs'],
+    outExtension: () => ({ js: '.cjs' }),
+    platform: 'node',
+    target: 'node20',
+    footer: { js: 'module.exports = module.exports.default;' },
+    external: ['@babel/parser', '@babel/traverse', 'magic-string'],
+  },
+  {
+    entry: { runtime: 'packages/core/runtime/runtime.ts' },
+    outDir: 'packages/mean/dist/browser',
+    format: ['esm'],
+    platform: 'browser',
+    target: 'es2022',
+    minify: true,
+    splitting: true,
+    treeshake: true,
+  },
+]);

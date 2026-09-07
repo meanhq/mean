@@ -1,0 +1,16 @@
+{
+  "name": "@mean-fixture/rspack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node server.mjs --build",
+    "start": "NODE_ENV=production node dist/server.mjs"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "@rspack/core": "2.2.2",
+    "@rspack/cli": "2.2.2",
+    "@rspack/dev-server": "2.2.1"
+  }
+}

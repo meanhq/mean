@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-adapters",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Resolves component names and owner chains from React, Vue and Svelte dev metadata; plain DOM elements get nothing.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "adapters"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/adapters"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

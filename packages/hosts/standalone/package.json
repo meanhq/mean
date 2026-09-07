@@ -1,0 +1,28 @@
+{
+  "name": "@meanhq/internal-standalone",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The npx @meanhq/mean relay for non-Node backends: a loopback listener that prints the development script tag.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meanhq/mean.git",
+    "directory": "packages/hosts/standalone"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "keywords": [
+    "mean",
+    "dom",
+    "development",
+    "standalone"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

@@ -1,0 +1,51 @@
+{
+  "name": "mean-dom-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "tsx scripts/generate.ts",
+    "build": "tsx scripts/generate.ts && tsx scripts/clean.ts && tsup && tsx scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --no-file-parallelism",
+    "test:e2e": "tsx fixtures/fake-mean/index.ts",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "check": "corepack pnpm build && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm test && publint --pack npm packages/mean && attw --pack packages/mean --profile esm-only --no-emoji"
+  },
+  "devDependencies": {
+    "@babel/parser": "7.29.8",
+    "@babel/traverse": "7.29.8",
+    "@types/babel__traverse": "7.28.0",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "5.2.0",
+    "vue": "3.5.30",
+    "svelte": "5.55.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
+    "json-schema-to-typescript": "15.0.4",
+    "magic-string": "0.30.21",
+    "parse5": "7.3.0",
+    "next": "16.3.4",
+    "playwright": "1.63.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "3.2.7",
+    "ws": "8.21.3",
+    "tsup": "8.5.1",
+    "@biomejs/biome": "2.5.12",
+    "publint": "0.3.24",
+    "@arethetypeswrong/cli": "0.18.5"
+  }
+}

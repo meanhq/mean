@@ -1,0 +1,15 @@
+{
+  "name": "@mean-fixtures/vue-vite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "@vitejs/plugin-vue": "6.0.4",
+    "vite": "7.3.6",
+    "vue": "3.5.30"
+  }
+}

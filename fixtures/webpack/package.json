@@ -1,0 +1,16 @@
+{
+  "name": "@mean-fixture/webpack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node server.mjs --build",
+    "start": "NODE_ENV=production node dist/server.mjs"
+  },
+  "devDependencies": {
+    "@meanhq/mean": "workspace:*",
+    "webpack": "5.110.3",
+    "webpack-dev-server": "5.2.6",
+    "webpack-cli": "6.0.1"
+  }
+}

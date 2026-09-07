@@ -1,0 +1,27 @@
+{
+  "name": "@meanhq/internal-vite",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Vite plugin behind @meanhq/mean/vite: injects the runtime, stamps JSX with file and line, relays to Mean.",
+  "license": "MIT",
+  "author": "Returnlabs Ltd",
+  "homepage": "https://mean.app",
+  "keywords": [
+    "mean",
+    "development",
+    "vite"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meanhq/mean.git",
+    "directory": "packages/hosts/vite"
+  },
+  "bugs": {
+    "url": "https://github.com/meanhq/mean/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
+}

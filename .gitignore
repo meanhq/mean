@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+.mean-fixture-*/
+fixtures/.fixture-next-*/
+.next/
