@@ -266,6 +266,7 @@ export function startRuntime(
   }
 
   // Runs one slice and hands back its part; a zero-delay timer continues the traversal.
+  // A snapshot change before the first part is stale; after it, the walk closes with a final part.
   function advance(
     traversal: Traversal,
     saved: Snapshot,
@@ -274,13 +275,20 @@ export function startRuntime(
     deadline: number,
   ): WalkPart {
     const part = traversal.slice(deadline);
-    if (!unchanged(saved)) throw stale();
+    if (!unchanged(saved)) {
+      if (part.part === 1) throw stale();
+      if (part.more) traversal.cancel();
+      return { ...part, elements: [], more: false, truncated: true };
+    }
     if (part.more) {
       const timer = setTimeout(() => {
         pending = undefined;
         if (disposed || epoch !== generation) return;
         try {
-          if (!unchanged(saved)) throw stale();
+          if (!unchanged(saved)) {
+            send(traversal.cancel());
+            return;
+          }
           send(
             advance(
               traversal,

@@ -263,6 +263,32 @@ describe('Lifecycle and the idle guarantee', () => {
     expect(timers.queue).toHaveLength(0);
     expect(timers.cleared).toBe(3);
   });
+  it('closes a walk with a final truncated part when the page changes after its first part', async () => {
+    document.body.innerHTML = '<p>text</p>'.repeat(60);
+    runtime = startRuntime('token', '/project');
+    const socket = connected();
+    await probe(socket);
+    const timers = captureTimers();
+    let clock = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 0.1));
+    socket.message(walk());
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({ requestId: walkId, part: 1, more: true });
+    window.scrollY = 40;
+    timers.fire();
+    await settle();
+    expect(socket.sent.at(-1)).toMatchObject({
+      type: 'walk.result',
+      requestId: walkId,
+      part: 2,
+      more: false,
+      truncated: true,
+    });
+    expect(socket.sent.some((sent) => sent.requestId === walkId && sent.type === 'error')).toBe(
+      false,
+    );
+    expect(timers.queue).toHaveLength(0);
+  });
   it('drops a pending walk silently when its socket closes', async () => {
     document.body.innerHTML = '<p>text</p>'.repeat(60);
     runtime = startRuntime('token', '/project');

@@ -38,7 +38,7 @@ export interface Traversal {
   readonly requestId: string;
   // Continues until the deadline, a part cap or the end of the document; the part is the caller's to send.
   slice(deadline: number): WalkPart;
-  // Ends an unfinished walk early: whatever is buffered leaves as the final part.
+  // Ends an unfinished walk early: whatever is buffered leaves as the final, truncated part.
   cancel(): WalkPart;
 }
 
@@ -79,16 +79,27 @@ const intersection = (a: Bounds, b: Bounds): Bounds => ({
 const positive = (r: Bounds): boolean => r.right > r.left && r.bottom > r.top;
 const clips = (overflow: string): boolean => /^(hidden|clip|scroll|auto)$/.test(overflow);
 const area = (entry: Entry): number => entry.rect.width * entry.rect.height;
-// The shorthand alone misses corners after a zero first value; the longhands alone miss engines
-// that only serialise the shorthand.
-const rounded = (style: CSSStyleDeclaration): boolean =>
-  [
+// Largest corner radius in CSS pixels. The shorthand alone misses corners after a zero first value;
+// the longhands alone miss engines that only serialise the shorthand. Percentages resolve against the
+// larger box side, which keeps the inset conservative.
+const largestRadius = (style: CSSStyleDeclaration, width: number, height: number): number => {
+  let largest = 0;
+  for (const value of [
     style.borderRadius,
     style.borderTopLeftRadius,
     style.borderTopRightRadius,
     style.borderBottomRightRadius,
     style.borderBottomLeftRadius,
-  ].some((radius) => parseFloat(radius) > 0);
+  ]) {
+    for (const token of value.split(/[\s/]+/)) {
+      const number = parseFloat(token);
+      if (!Number.isFinite(number)) continue;
+      const pixels = token.endsWith('%') ? (number / 100) * Math.max(width, height) : number;
+      if (pixels > largest) largest = pixels;
+    }
+  }
+  return largest;
+};
 
 export function startWalk(
   requestId: string,
@@ -232,14 +243,16 @@ export function startWalk(
     const clipX = style.display !== 'inline' && clips(style.overflowX || style.overflow);
     const clipY = style.display !== 'inline' && clips(style.overflowY || style.overflow);
     if (clipX || clipY) {
-      // Transformed or rounded overflow containers clip to a shape this protocol cannot express.
-      if ((style.transform && style.transform !== 'none') || rounded(style)) descend = false;
+      // A transformed overflow container clips to a shape this protocol cannot express.
+      if (style.transform && style.transform !== 'none') descend = false;
       else {
+        // A rounded container clips to its padding box inset by its largest corner radius.
+        const inset = largestRadius(style, element.clientWidth, element.clientHeight);
         const padding = {
-          left: clientRect.left + element.clientLeft,
-          top: clientRect.top + element.clientTop,
-          right: clientRect.left + element.clientLeft + element.clientWidth,
-          bottom: clientRect.top + element.clientTop + element.clientHeight,
+          left: clientRect.left + element.clientLeft + inset,
+          top: clientRect.top + element.clientTop + inset,
+          right: clientRect.left + element.clientLeft + element.clientWidth - inset,
+          bottom: clientRect.top + element.clientTop + element.clientHeight - inset,
         };
         childClip = intersection(visit.clip, {
           left: clipX ? padding.left : -Infinity,
@@ -393,7 +406,7 @@ export function startWalk(
     cancel() {
       assertOpen();
       const elements = carried ? [carried.entry] : [];
-      if (stack.length) context.truncated = true;
+      context.truncated = true;
       return close(elements, false);
     },
   };

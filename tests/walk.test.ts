@@ -160,7 +160,7 @@ describe('Walk algorithm and budget', () => {
   });
   it('clips to rectangular ancestors and omits descendants of unsupported clips', () => {
     document.body.innerHTML =
-      '<div id="clip" style="overflow:hidden"><b id="small">Visible</b></div><div style="clip-path:circle(50%)"><b>UNSUPPORTED</b></div><div id="rounded" style="overflow:hidden;border-radius:4px">Rounded<b id="inside">CORNER</b></div>';
+      '<div id="clip" style="overflow:hidden"><b id="small">Visible</b></div><div style="clip-path:circle(50%)"><b>UNSUPPORTED</b></div><div id="moved" style="overflow:hidden;transform:rotate(3deg)">Moved<b id="inside">TRANSFORMED</b></div>';
     const clip = document.getElementById('clip');
     if (!clip) throw new Error('Missing clipping element');
     Object.defineProperties(clip, { clientWidth: { value: 5 }, clientHeight: { value: 5 } });
@@ -172,9 +172,28 @@ describe('Walk algorithm and budget', () => {
       height: 0.005,
     });
     expect(JSON.stringify(result.parts)).not.toContain('UNSUPPORTED');
-    // The rounded container keeps its own box and text; only its descendants' geometry is unknown.
-    expect(result.elements.find((entry) => entry.id === 'rounded')?.text).toBe('Rounded');
-    expect(JSON.stringify(result.parts)).not.toContain('CORNER');
+    // The transformed container keeps its own box and text; only its descendants' geometry is unknown.
+    expect(result.elements.find((entry) => entry.id === 'moved')?.text).toBe('Moved');
+    expect(JSON.stringify(result.parts)).not.toContain('TRANSFORMED');
+  });
+  it('clips descendants of a rounded overflow container to its padding box inset by the radius', () => {
+    document.body.innerHTML =
+      '<div id="card" style="overflow:hidden;border-radius:0 8px 8px 0"><b id="badge">Badge</b></div><div id="avatar" style="overflow:hidden;border-radius:50%"><b id="picture">Picture</b></div>';
+    for (const id of ['card', 'avatar']) {
+      const element = document.getElementById(id);
+      if (!element) throw new Error('Missing rounded element');
+      Object.defineProperties(element, { clientWidth: { value: 40 }, clientHeight: { value: 40 } });
+    }
+    const result = run();
+    expect(result.elements.find((entry) => entry.id === 'badge')?.rect).toEqual({
+      x: 0.008,
+      y: 0.008,
+      width: 0.024,
+      height: 0.024,
+    });
+    // A 50% radius insets the whole box: nothing inside the circle can be placed.
+    expect(result.elements.some((entry) => entry.id === 'avatar')).toBe(true);
+    expect(JSON.stringify(result.parts)).not.toContain('Picture');
   });
   it('stops at 40000 visited nodes and 2 MiB of UTF-8 across parts', () => {
     document.body.innerHTML = `${'<!-- ignored -->'.repeat(40001)}<b>TOO LATE</b>`;
