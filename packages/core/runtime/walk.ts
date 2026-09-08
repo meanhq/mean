@@ -142,7 +142,10 @@ export function startWalk(
   const envelopeBytes = utf8Length(JSON.stringify(part([], false, MAX_PARTS)));
   const encoded = new WeakMap<Entry, string>();
   // The envelope up to the elements array, in the key order `part` writes.
-  const head = JSON.stringify({ v: 1, type: 'walk.result', requestId, viewport: view }).slice(0, -1);
+  const head = JSON.stringify({ v: 1, type: 'walk.result', requestId, viewport: view }).slice(
+    0,
+    -1,
+  );
   const serialize = (value: WalkPart): string => {
     const items = value.elements.map((entry) => encoded.get(entry) ?? JSON.stringify(entry));
     return `${head},"elements":[${items.join(',')}],"truncated":${value.truncated},"part":${value.part},"more":${value.more}}`;
