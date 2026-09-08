@@ -65,7 +65,7 @@ const MAX_DEPTH = 128;
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_PART_BYTES = 256 * 1024;
 const MAX_PARTS = 1000;
-const MAX_PATH_DEPTH = 12;
+const MAX_PATH_LENGTH = 4096;
 const MAX_TEXT = 80;
 const MAX_CLASSES = 16;
 const TEXT_CHUNK = 1024;
@@ -276,13 +276,10 @@ export function startWalk(
       if (valid) classes.push(valid);
     }
 
+    // Every walked element carries its full path: a cut path would read
+    // as a real one and collide with its neighbours.
     let path: string | undefined;
-    if (
-      visit.depth < MAX_PATH_DEPTH &&
-      (visit.depth === 0 || visit.path) &&
-      typeof CSS !== 'undefined' &&
-      CSS.escape
-    ) {
+    if ((visit.depth === 0 || visit.path) && typeof CSS !== 'undefined' && CSS.escape) {
       const literalId = element.getAttribute('id');
       // An omitted oversized id must not turn into a class-based selector for a different element.
       if ((!literalId || id) && tag.length <= 64) {
@@ -293,9 +290,9 @@ export function startWalk(
               .map((token) => `.${CSS.escape(token)}`)
               .join('');
         const segment = `${element.localName}${selector}:nth-of-type(${ordinal})`;
-        path = keepWithin(visit.path ? `${visit.path} > ${segment}` : segment, 1024);
+        path = keepWithin(visit.path ? `${visit.path} > ${segment}` : segment, MAX_PATH_LENGTH);
       }
-    } else if (visit.depth >= MAX_PATH_DEPTH) context.truncated = true;
+    }
 
     if (descend && !isPrivate && element.firstChild && positive(childClip)) {
       if (visit.depth < MAX_DEPTH)

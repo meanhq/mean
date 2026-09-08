@@ -149,7 +149,11 @@ describe('Walk algorithm and budget', () => {
     expect(result.truncated).toBe(true);
     expect(result.parts.length).toBe(4);
     document.body.innerHTML = `${'<div>'.repeat(140)}deep${'</div>'.repeat(140)}`;
-    expect(Math.max(...run().elements.map((entry) => entry.depth))).toBe(128);
+    const deep = run();
+    expect(Math.max(...deep.elements.map((entry) => entry.depth))).toBe(128);
+    // Paths are never cut short: the deepest walked element still names every ancestor.
+    const deepest = deep.elements.find((entry) => entry.depth === 128);
+    expect(deepest?.elementPath?.split(' > ')).toHaveLength(129);
     document.body.innerHTML = `<div id="${'x'.repeat(129)}">${'\u{1f600}'.repeat(81)}</div>`;
     const last = run();
     expect(last.elements[0]?.id).toBeUndefined();
