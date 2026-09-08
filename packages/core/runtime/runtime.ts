@@ -87,7 +87,7 @@ export function startRuntime(
     if (!current) return;
     pending = undefined;
     clearTimeout(current.timer);
-    current.send(current.traversal.cancel());
+    current.send(current.traversal.serialize(current.traversal.cancel()));
   };
 
   function reconnect(): void {
@@ -171,9 +171,10 @@ export function startRuntime(
     const message = decodeFrame(event.data, current);
     if (!message) return;
     const requestId = message.requestId as string;
+    // Walk parts arrive already serialized; everything else is encoded here.
     const send = (value: unknown): void => {
       if (!disposed && epoch === generation && current.readyState === WebSocket.OPEN)
-        current.send(JSON.stringify(value));
+        current.send(typeof value === 'string' ? value : JSON.stringify(value));
     };
     const fail = (code: ErrorCode): void => send({ v: 1, type: 'error', requestId, code });
     if (busy) {
@@ -261,7 +262,9 @@ export function startRuntime(
         truncated: detection.truncated,
       };
       const traversal = walker.startWalk(request.requestId, view, detected, context);
-      return advance(traversal, saved, epoch, send, started + FIRST_SLICE_MS - PART_RESERVE_MS);
+      return traversal.serialize(
+        advance(traversal, saved, epoch, send, started + FIRST_SLICE_MS - PART_RESERVE_MS),
+      );
     });
   }
 
@@ -286,16 +289,18 @@ export function startRuntime(
         if (disposed || epoch !== generation) return;
         try {
           if (!unchanged(saved)) {
-            send(traversal.cancel());
+            send(traversal.serialize(traversal.cancel()));
             return;
           }
           send(
-            advance(
-              traversal,
-              saved,
-              epoch,
-              send,
-              performance.now() + NEXT_SLICE_MS - PART_RESERVE_MS,
+            traversal.serialize(
+              advance(
+                traversal,
+                saved,
+                epoch,
+                send,
+                performance.now() + NEXT_SLICE_MS - PART_RESERVE_MS,
+              ),
             ),
           );
         } catch (cause) {

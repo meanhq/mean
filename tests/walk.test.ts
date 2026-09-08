@@ -142,6 +142,13 @@ describe('Walk algorithm and budget', () => {
       'div#small:nth-of-type(2)',
     );
   });
+  it('serializes a part byte for byte like JSON.stringify', () => {
+    document.body.innerHTML = '<main id="a"><b class="x y">Hi \u{1f600}</b><i>there</i></main>';
+    const traversal = start(Infinity);
+    const part = traversal.slice(Infinity);
+    expect(traversal.serialize(part)).toBe(JSON.stringify(part));
+    expect(JSON.parse(traversal.serialize(part))).toEqual(part);
+  });
   it('caps element count, depth and field sizes', () => {
     document.body.innerHTML = `<div>${'<b>word</b>'.repeat(4100)}</div>`;
     const result = run();

@@ -40,6 +40,10 @@ export interface Traversal {
   slice(deadline: number): WalkPart;
   // Ends an unfinished walk early: whatever is buffered leaves as the final, truncated part.
   cancel(): WalkPart;
+  // The wire form of a part from this walk. Entries were encoded once while
+  // the byte budget was counted; the part is joined from those strings, so
+  // the work after the deadline is a join, not a second encoding.
+  serialize(part: WalkPart): string;
 }
 
 interface Bounds {
@@ -136,6 +140,13 @@ export function startWalk(
   });
   // Every part carries the envelope; the widest part number and truncated value are assumed.
   const envelopeBytes = utf8Length(JSON.stringify(part([], false, MAX_PARTS)));
+  const encoded = new WeakMap<Entry, string>();
+  // The envelope up to the elements array, in the key order `part` writes.
+  const head = JSON.stringify({ v: 1, type: 'walk.result', requestId, viewport: view }).slice(0, -1);
+  const serialize = (value: WalkPart): string => {
+    const items = value.elements.map((entry) => encoded.get(entry) ?? JSON.stringify(entry));
+    return `${head},"elements":[${items.join(',')}],"truncated":${value.truncated},"part":${value.part},"more":${value.more}}`;
+  };
   let totalBytes = envelopeBytes;
   const pastDeadline = () => performance.now() >= context.deadline;
 
@@ -381,7 +392,9 @@ export function startWalk(
         }
         const entry = inspect();
         if (!entry) continue;
-        const size = utf8Length(JSON.stringify(entry)) + 1;
+        const json = JSON.stringify(entry);
+        encoded.set(entry, json);
+        const size = utf8Length(json) + 1;
         const splits = elements.length >= MAX_PART_ELEMENTS || partBytes + size > MAX_PART_BYTES;
         if (totalBytes + size + (splits ? envelopeBytes : 0) > MAX_BYTES) {
           context.truncated = true;
@@ -406,5 +419,6 @@ export function startWalk(
       context.truncated = true;
       return close(elements, false);
     },
+    serialize,
   };
 }
