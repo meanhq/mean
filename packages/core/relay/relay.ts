@@ -45,8 +45,8 @@ export function attach(
   let mean: WebSocket | undefined;
   let endpoint: Endpoint | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  // Ladder position; reset only by a discovery file change, not by a successful connection.
   let attempts = 0;
-  let established = false;
   // Set after authentication or protocol failures: no retry until the discovery file changes.
   let abandoned = false;
   let disposed = false;
@@ -72,7 +72,6 @@ export function attach(
         socket.terminate();
         return;
       }
-      established = true;
       // Replay page.open for live pages only; old walk results are never replayed.
       for (const [pageId, page] of pages) {
         if (page.socket.readyState === WebSocket.OPEN)
@@ -117,6 +116,7 @@ export function attach(
     });
     socket.on('error', (error: Error & { code?: string }) => {
       if (current !== generation) return;
+      // A handshake timeout counts as a network failure and retries under the ladder.
       if (error.message === 'Opening handshake has timed out') {
         options.diagnostic?.('listener_unresponsive');
         return;
@@ -128,7 +128,9 @@ export function attach(
       if (current !== generation || disposed) return;
       mean = undefined;
       if ([1002, 1003, 1007, 1008, 1009].includes(code)) abandoned = true;
-      if (established && !abandoned && attempts < RETRY_DELAYS_MS.length) {
+      // A fresh endpoint that fails with a network error (the app's listener is not accepting
+      // yet, a reset, a handshake timeout) retries on the same ladder as a dropped connection.
+      if (!abandoned && attempts < RETRY_DELAYS_MS.length) {
         const delay = RETRY_DELAYS_MS[attempts++] ?? 5000;
         retry = setTimeout(connect, delay * (0.8 + Math.random() * 0.4));
       }
@@ -142,7 +144,6 @@ export function attach(
     mean = undefined;
     endpoint = result.endpoint;
     attempts = 0;
-    established = false;
     abandoned = false;
     if (result.reason) options.diagnostic?.(result.reason);
     if (endpoint) connect();

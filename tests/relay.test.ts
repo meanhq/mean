@@ -13,6 +13,7 @@ import {
 import { createServer, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Duplex } from 'node:stream';
 import { setTimeout as settle } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -42,6 +43,24 @@ const discovery = (directory: string, value = endpoint()) => {
   return path;
 };
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const listen = async (server: ReturnType<typeof createServer>) => {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  cleanup.push(() => server.close());
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing listener');
+  return address.port;
+};
+const upstreamServer = (options: ConstructorParameters<typeof WebSocketServer>[0]) => {
+  const upstream = new WebSocketServer(options);
+  cleanup.push(() => {
+    for (const socket of upstream.clients) socket.terminate();
+    upstream.close();
+  });
+  const connections: WebSocket[] = [];
+  upstream.on('connection', (socket) => connections.push(socket));
+  return { upstream, connections };
+};
 
 describe('Transport and discovery', () => {
   it('accepts only a private regular file with version 1', () => {
@@ -145,22 +164,130 @@ describe('Lifecycle and the idle guarantee', () => {
       upgrades++;
       socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
     });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    cleanup.push(() => server.close());
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('Missing listener');
+    const port = await listen(server);
     const reasons: string[] = [];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const relay = attach(server, {
-      origin: `http://127.0.0.1:${address.port}`,
-      discoveryFile: discovery(temp(), { ...endpoint(), port: address.port }),
+      origin: `http://127.0.0.1:${port}`,
+      discoveryFile: discovery(temp(), { ...endpoint(), port }),
       diagnostic: (reason) => reasons.push(reason),
     });
     cleanup.push(() => relay.dispose());
     await settle(40);
     expect(reasons).toContain('authentication_failed');
-    await settle(350);
+    // Authentication failure abandons the endpoint; the whole ladder passes without another attempt.
+    await vi.advanceTimersByTimeAsync(10000);
+    await settle(40);
     expect(upgrades).toBe(1);
+  });
+  it('retries a fresh endpoint whose first connection was refused once a listener appears', async () => {
+    const server = createServer();
+    const port = await listen(server);
+    // Take a port and release it, so the first connection is refused with no listener.
+    const probe = createServer();
+    probe.listen(0, '127.0.0.1');
+    await once(probe, 'listening');
+    const meanPort = (probe.address() as { port: number }).port;
+    probe.close();
+    await once(probe, 'close');
+    const reasons: string[] = [];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const relay = attach(server, {
+      origin: `http://127.0.0.1:${port}`,
+      discoveryFile: discovery(temp(), { ...endpoint(), port: meanPort }),
+      diagnostic: (reason) => reasons.push(reason),
+    });
+    cleanup.push(() => relay.dispose());
+    await settle(40);
+    const { upstream, connections } = upstreamServer({ host: '127.0.0.1', port: meanPort });
+    await once(upstream, 'listening');
+    await vi.advanceTimersByTimeAsync(199);
+    await settle(20);
+    expect(connections).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(102);
+    await settle(40);
+    expect(connections).toHaveLength(1);
+    expect(reasons).toEqual([]);
+  });
+  it('drops the pending retry and restarts the ladder when the discovery file changes', async () => {
+    const server = createServer();
+    const port = await listen(server);
+    // The stale endpoint accepts the connection and resets it before the handshake completes.
+    const stale = createServer();
+    let resets = 0;
+    stale.on('upgrade', (_request, socket) => {
+      resets++;
+      socket.destroy();
+    });
+    const stalePort = await listen(stale);
+    const { upstream, connections } = upstreamServer({ host: '127.0.0.1', port: 0 });
+    await once(upstream, 'listening');
+    const livePort = (upstream.address() as { port: number }).port;
+    const path = discovery(temp(), { ...endpoint(), port: stalePort });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const relay = attach(server, { origin: `http://127.0.0.1:${port}`, discoveryFile: path });
+    cleanup.push(() => relay.dispose());
+    await settle(40);
+    expect(resets).toBe(1);
+    await vi.advanceTimersByTimeAsync(301);
+    await settle(40);
+    expect(resets).toBe(2);
+    // The next retry is due in 800 ms to 1200 ms. Advance in small steps so the watcher's
+    // coalescing timer runs while the pending retry stays ahead of the clock.
+    writeFileSync(path, JSON.stringify({ ...endpoint(), port: livePort }));
+    for (let step = 0; step < 20 && !connections.length; step++) {
+      await settle(50);
+      await vi.advanceTimersByTimeAsync(30);
+    }
+    await settle(40);
+    expect(connections).toHaveLength(1);
+    expect(resets).toBe(2);
+    await vi.advanceTimersByTimeAsync(10000);
+    await settle(40);
+    expect(resets).toBe(2);
+    expect(connections).toHaveLength(1);
+  });
+  it('retries after a handshake timeout', { timeout: 15000 }, async () => {
+    const server = createServer();
+    const { upstream, connections } = upstreamServer({ noServer: true });
+    // The first upgrade is held without a response until the relay's handshake times out.
+    const held: Duplex[] = [];
+    let upgrades = 0;
+    server.on('upgrade', (request, socket, head) => {
+      upgrades++;
+      if (upgrades === 1) {
+        socket.on('error', () => {});
+        held.push(socket);
+        return;
+      }
+      upstream.handleUpgrade(request, socket, head, (accepted) =>
+        upstream.emit('connection', accepted),
+      );
+    });
+    cleanup.push(() => {
+      for (const socket of held) socket.destroy();
+    });
+    const port = await listen(server);
+    const reasons: string[] = [];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const relay = attach(server, {
+      origin: `http://127.0.0.1:${port}`,
+      discoveryFile: discovery(temp(), { ...endpoint(), port }),
+      diagnostic: (reason) => reasons.push(reason),
+    });
+    cleanup.push(() => relay.dispose());
+    await settle(40);
+    expect(upgrades).toBe(1);
+    // The 5 second handshake timeout is a socket timeout, which the fake timers do not cover.
+    await settle(5300);
+    expect(reasons).toEqual(['listener_unresponsive']);
+    await vi.advanceTimersByTimeAsync(199);
+    await settle(20);
+    expect(upgrades).toBe(1);
+    await vi.advanceTimersByTimeAsync(102);
+    await settle(40);
+    expect(upgrades).toBe(2);
+    expect(connections).toHaveLength(1);
   });
 });
 
