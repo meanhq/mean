@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- the relay retries a refused first connect after a discovery-file change with the same 250 ms, 1 s, 5 s ladder as a dropped connection, so a Mean relaunch reconnects without a dev-server restart
 - cooperative, cumulative page walk: the first `walk.result` part targets 20 ms of page time, later parts follow 12 ms slices on zero-delay timers until the page is covered; parts carry `part` and `more`, only the final part reports `truncated`
 - whole-walk caps of 4000 elements, 40000 inspections, 2 MiB and 2 s replace the single 1000-element, 256 KiB prefix; each part stays under 256 KiB
 - a pending walk is closed by a new probe or walk and by page hide; no timer exists outside an in-flight walk
